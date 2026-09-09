@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Tuple
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel 
 
 current_dir = Path(__file__).resolve().parent
 if str(current_dir) not in sys.path:
