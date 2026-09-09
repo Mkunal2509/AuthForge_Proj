@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 
-const AUTO_CAPTURE_MS = 1700;
+const API_BASE = 'http://127.0.0.1:8000/api/v1/airsig';
+const AUTO_SUBMIT_DELAY_MS = 2000;
 const CIRCUMFERENCE = 226;
-const MIN_SAMPLE_DISTANCE_PX = 3.8; // Spatial decimation: drops redundant stationary jitter
 
+// Responsive 1€ Low-pass filter
 class OneEuroFilter {
-  constructor(minCutoff = 1.0, beta = 0.007, dCutoff = 1.0) {
+  constructor(minCutoff = 1.4, beta = 0.04, dCutoff = 1.0) {
     this.minCutoff = minCutoff;
     this.beta = beta;
     this.dCutoff = dCutoff;
@@ -49,26 +50,21 @@ export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // Direct DOM Nodes (0-latency UI updates)
-  const hudDotRef = useRef(null);
-  const hudLabelRef = useRef(null);
-  const pointCounterRef = useRef(null);
-
-  const [userId, setUserId] = useState('kunal_01');
-  const [terminalText, setTerminalText] = useState('> Optimized pipeline online. Pinch Thumb + Index to sign.');
+  const [userId, setUserId] = useState('user_alice');
   const [enrollMode, setEnrollMode] = useState(false);
   const [currentPass, setCurrentPass] = useState(1);
+  const [terminalText, setTerminalText] = useState('> Air-Signature Engine Ready.\n  Pinch Thumb + Index to sign. Hover freely. Withdraw hand to submit.');
 
-  // Auto-Submit Overlay
+  // Auto-Submit Countdown State
   const [showCountdown, setShowCountdown] = useState(false);
-  const [secondsRemaining, setSecondsRemaining] = useState('1.7');
+  const [secondsLeft, setSecondsLeft] = useState('2.0');
   const [ringOffset, setRingOffset] = useState(0);
 
-  // Trajectory & Kinematic Buffers
+  // Stroke Buffers
   const strokesRef = useRef([]);
   const currentStrokeRef = useRef([]);
   const kinematicsRef = useRef([]);
-  const enrollmentPassesRef = useRef([]);
+  const enrolledPassesRef = useRef([]);
 
   const isPinchingRef = useRef(false);
   const isCapturedRef = useRef(false);
@@ -77,57 +73,65 @@ export default function App() {
 
   const filterXRef = useRef(new OneEuroFilter());
   const filterYRef = useRef(new OneEuroFilter());
-  const filterZRef = useRef(new OneEuroFilter());
 
-  const handleClear = () => {
-    stopCountdown();
+  const handleClear = useCallback(() => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    setShowCountdown(false);
+    setRingOffset(0);
+
     strokesRef.current = [];
     currentStrokeRef.current = [];
     kinematicsRef.current = [];
     isCapturedRef.current = false;
     filterXRef.current.reset();
     filterYRef.current.reset();
-    filterZRef.current.reset();
 
-    if (pointCounterRef.current) pointCounterRef.current.innerText = 'Tracked Points: 0';
     const canvas = canvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
-  };
+  }, []);
 
   const startEnrollmentWizard = () => {
     handleClear();
     setEnrollMode(true);
     setCurrentPass(1);
-    enrollmentPassesRef.current = [];
-    setTerminalText('> 3-PASS ENROLLMENT STARTED:\n  Sign Pass 1 of 3 (Pinch to sign, then remove hand).');
+    enrolledPassesRef.current = [];
+    setTerminalText(`> ENROLLMENT STARTED for [${userId}]:\n  Pinch to write Pass 1 of 3. Withdraw hand from frame when finished.`);
   };
 
   const cancelEnrollment = () => {
     handleClear();
     setEnrollMode(false);
     setCurrentPass(1);
-    enrollmentPassesRef.current = [];
-    setTerminalText('> Enrollment aborted. Returned to standard mode.');
+    enrolledPassesRef.current = [];
+    setTerminalText('> Enrollment aborted.');
   };
 
   const submitFusedEnrollment = async (passes) => {
-    setTerminalText('> Processing 3-Pass PCA-DBA Template Synthesis...');
+    setTerminalText(`> Synthesizing 3-pass master template via DBA for [${userId}]...`);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/airsig/enroll-fused', {
+      const res = await fetch(`${API_BASE}/enroll-fused`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, passes })
+        body: JSON.stringify({
+          client_id: 'default',
+          user_id: userId,
+          passes: passes
+        })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Enrollment failed');
 
-      setTerminalText(`> [ENROLLMENT SUCCESSFUL]\n  ${data.message}\n  PCA rotational anchor and encrypted vault updated.`);
+      setTerminalText(`> [ENROLLMENT COMPLETE]\n  ${data.message}\n  Vault updated with unique topological profile.`);
       setEnrollMode(false);
       setCurrentPass(1);
-      enrollmentPassesRef.current = [];
+      enrolledPassesRef.current = [];
+      handleClear();
     } catch (err) {
       setTerminalText(`> Enrollment Error: ${err.message}`);
     }
@@ -135,20 +139,21 @@ export default function App() {
 
   const handleVerificationRequest = useCallback(async () => {
     const allStrokes = [...strokesRef.current, ...(currentStrokeRef.current.length > 0 ? [currentStrokeRef.current] : [])];
-    const points = allStrokes.flat();
+    const points = allStrokes.flat().map(p => [p[0], p[1]]);
 
-    if (points.length < 10) {
-      setTerminalText('> Stroke too short. Pinch and draw a complete gesture.');
+    if (points.length < 15) {
+      setTerminalText('> Signature too short. Pinch and sign a full gesture.');
       return;
     }
 
-    setTerminalText(`> Running 3D PCA-DTW verification & kinematic analysis...`);
+    setTerminalText(`> Verifying candidate against vault for [${userId}]...`);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v1/airsig/verify', {
+      const res = await fetch(`${API_BASE}/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          client_id: 'default',
           user_id: userId,
           points: points,
           kinematics: kinematicsRef.current
@@ -159,7 +164,13 @@ export default function App() {
       if (!res.ok) throw new Error(result.detail || 'Verification error');
 
       const flag = result.authenticated ? '[MATCH VERIFIED - ACCESS GRANTED]' : '[ACCESS DENIED - MISMATCH]';
-      setTerminalText(`> ${flag}\n  Confidence: ${result.confidence_score}\n  Fused Cost: ${result.dtw_distance} (Threshold: < ${result.threshold})\n  Rotational-Invariance Cost: ${result.shape_distance}\n  Neuromuscular Velocity Distance: ${result.behavioral_distance}`);
+      setTerminalText(
+        `> ${flag}\n` +
+        `  Target User: ${userId}\n` +
+        `  Normalized DTW: ${result.dtw_distance} (Threshold: <= ${result.threshold})\n` +
+        `  Confidence: ${result.confidence_score}\n` +
+        `  Shape Divergence: ${result.shape_distance} | Kinematics: ${result.behavioral_distance}`
+      );
     } catch (err) {
       setTerminalText(`> Verification Error: ${err.message}`);
     }
@@ -167,19 +178,19 @@ export default function App() {
 
   const handleAutoDispatch = useCallback(() => {
     const allStrokes = [...strokesRef.current, ...(currentStrokeRef.current.length > 0 ? [currentStrokeRef.current] : [])];
-    const points = allStrokes.flat();
-    if (points.length < 10) return;
+    const points = allStrokes.flat().map(p => [p[0], p[1]]);
+    if (points.length < 15) return;
 
     if (enrollMode) {
       const passData = { points, kinematics: [...kinematicsRef.current] };
-      const updated = [...enrollmentPassesRef.current, passData];
-      enrollmentPassesRef.current = updated;
+      const updated = [...enrolledPassesRef.current, passData];
+      enrolledPassesRef.current = updated;
 
       if (updated.length < 3) {
         const next = updated.length + 1;
         setCurrentPass(next);
         handleClear();
-        setTerminalText(`> Pass ${updated.length}/3 stored.\n  Sign Pass ${next} of 3 (Pinch Thumb + Index).`);
+        setTerminalText(`> Pass ${updated.length}/3 saved!\n  Now sign Pass ${next} of 3, then withdraw hand.`);
       } else {
         handleClear();
         submitFusedEnrollment(updated);
@@ -187,22 +198,23 @@ export default function App() {
     } else {
       handleVerificationRequest();
     }
-  }, [enrollMode, handleVerificationRequest]);
+  }, [enrollMode, handleVerificationRequest, handleClear]);
 
+  // Non-Interruptive Countdown Handlers
   const startCountdown = useCallback(() => {
     if (countdownTimerRef.current || isCapturedRef.current) return;
     const totalPoints = strokesRef.current.flat().length + currentStrokeRef.current.length;
-    if (totalPoints < 10) return;
+    if (totalPoints < 15) return;
 
     setShowCountdown(true);
     countdownStartRef.current = performance.now();
 
     countdownTimerRef.current = setInterval(() => {
       const elapsed = performance.now() - countdownStartRef.current;
-      const remaining = Math.max(0, AUTO_CAPTURE_MS - elapsed);
+      const remaining = Math.max(0, AUTO_SUBMIT_DELAY_MS - elapsed);
 
-      setSecondsRemaining((remaining / 1000).toFixed(1));
-      const fraction = remaining / AUTO_CAPTURE_MS;
+      setSecondsLeft((remaining / 1000).toFixed(1));
+      const fraction = remaining / AUTO_SUBMIT_DELAY_MS;
       setRingOffset(CIRCUMFERENCE * (1 - fraction));
 
       if (remaining <= 0) {
@@ -227,30 +239,27 @@ export default function App() {
   useEffect(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { alpha: false }); // Disable canvas alpha blending for faster GPU rasterization
-
-    let isRunning = true;
+    const ctx = canvas.getContext('2d');
 
     const hands = new window.Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
 
     hands.setOptions({
       maxNumHands: 1,
-      modelComplexity: 0, // Lite model eliminates inference lag completely
-      minDetectionConfidence: 0.60,
-      minTrackingConfidence: 0.60
+      modelComplexity: 1,
+      minDetectionConfidence: 0.70,
+      minTrackingConfidence: 0.70
     });
 
-    hands.onResults((results) => {
-      if (!isRunning) return;
+    hands.onResults(results => {
+      ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const handDetected = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
 
-      const detected = results.multiHandLandmarks && results.multiHandLandmarks.length > 0;
-
-      if (detected) {
+      if (handDetected) {
+        // NON-INTERRUPTIVE GUARD: Hand is in view, cancel any pending submission
         stopCountdown();
 
         const lm = results.multiHandLandmarks[0];
@@ -259,97 +268,73 @@ export default function App() {
         const indexTip = lm[8];
         const middleMcp = lm[9];
 
-        // Palm scale normalization
-        const palmSize = Math.hypot(middleMcp.x - wrist.x, middleMcp.y - wrist.y, middleMcp.z - wrist.z) || 1.0;
-        const pinchDistance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y, thumbTip.z - indexTip.z);
-        const pinchRatio = pinchDistance / palmSize;
+        const palmSpan = Math.hypot(middleMcp.x - wrist.x, middleMcp.y - wrist.y) || 1.0;
+        const pinchDistance = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+        const pinchRatio = pinchDistance / palmSpan;
 
-        // Dynamic Schmitt-Trigger Hysteresis
-        if (!isPinchingRef.current && pinchRatio < 0.27) {
+        // Tactile Pinch Clutch
+        if (!isPinchingRef.current && pinchRatio < 0.24) {
           isPinchingRef.current = true;
-        } else if (isPinchingRef.current && pinchRatio > 0.40) {
+        } else if (isPinchingRef.current && pinchRatio > 0.36) {
           isPinchingRef.current = false;
         }
         const activePinch = isPinchingRef.current;
 
         const now = performance.now();
-        const rawX = (activePinch ? (thumbTip.x + indexTip.x) / 2 : indexTip.x) * canvas.width;
-        const rawY = (activePinch ? (thumbTip.y + indexTip.y) / 2 : indexTip.y) * canvas.height;
-        const rawZ = ((thumbTip.z + indexTip.z) / 2) / palmSize;
+        const rawX = indexTip.x * canvas.width;
+        const rawY = indexTip.y * canvas.height;
 
         const smoothX = filterXRef.current.filter(rawX, now);
         const smoothY = filterYRef.current.filter(rawY, now);
-        const smoothZ = filterZRef.current.filter(rawZ, now);
-        const handTilt = Math.atan2(middleMcp.y - wrist.y, middleMcp.x - wrist.x);
 
         if (activePinch) {
-          // Spatial Decimation: Only add point if hand has moved past Euclidean pixel threshold
           const lastPt = currentStrokeRef.current[currentStrokeRef.current.length - 1];
-          const hasMovedEnough = !lastPt || Math.hypot(smoothX - lastPt[0], smoothY - lastPt[1]) >= MIN_SAMPLE_DISTANCE_PX;
-
-          if (hasMovedEnough) {
+          if (!lastPt || Math.hypot(smoothX - lastPt[0], smoothY - lastPt[1]) >= 1.2) {
             if (currentStrokeRef.current.length === 0) isCapturedRef.current = false;
-            currentStrokeRef.current.push([smoothX, smoothY]);
-            kinematicsRef.current.push([smoothX, smoothY, smoothZ, now, handTilt]);
+            currentStrokeRef.current.push([smoothX, smoothY, now]);
+            kinematicsRef.current.push([smoothX, smoothY, now]);
           }
 
-          if (hudDotRef.current) {
-            hudDotRef.current.style.background = '#00f2fe';
-            hudDotRef.current.style.boxShadow = '0 0 10px #00f2fe';
-          }
-          if (hudLabelRef.current) hudLabelRef.current.innerText = '✍️ Drawing (Pinch Engaged)';
-
-          // Pointer Visualizer
+          // Inking Nib
           ctx.beginPath();
-          ctx.arc(smoothX, smoothY, 6, 0, 2 * Math.PI);
+          ctx.arc(smoothX, smoothY, 4.5, 0, 2 * Math.PI);
           ctx.fillStyle = '#00f2fe';
           ctx.fill();
         } else {
+          // Hover Reticle (User is lifting pen to reposition or cross 't')
           if (currentStrokeRef.current.length > 1) {
             strokesRef.current.push([...currentStrokeRef.current]);
           }
           currentStrokeRef.current = [];
 
-          if (hudDotRef.current) {
-            hudDotRef.current.style.background = '#f59e0b';
-            hudDotRef.current.style.boxShadow = 'none';
-          }
-          if (hudLabelRef.current) hudLabelRef.current.innerText = '🖐️ Hovering (Pinch to Draw)';
-
-          ctx.beginPath();
-          ctx.arc(smoothX, smoothY, 5, 0, 2 * Math.PI);
           ctx.strokeStyle = '#f59e0b';
           ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(smoothX, smoothY, 6, 0, 2 * Math.PI);
           ctx.stroke();
         }
-
-        const totalPts = strokesRef.current.flat().length + currentStrokeRef.current.length;
-        if (pointCounterRef.current) pointCounterRef.current.innerText = `Points: ${totalPts}`;
       } else {
+        // Hand left the frame: pack in-progress stroke and trigger submission countdown
         isPinchingRef.current = false;
         filterXRef.current.reset();
         filterYRef.current.reset();
-        filterZRef.current.reset();
 
         if (currentStrokeRef.current.length > 1) {
           strokesRef.current.push([...currentStrokeRef.current]);
         }
         currentStrokeRef.current = [];
 
-        if (hudDotRef.current) hudDotRef.current.style.background = '#64748b';
-        if (hudLabelRef.current) hudLabelRef.current.innerText = 'Hand Out of Frame';
-
         const totalPts = strokesRef.current.flat().length;
-        if (totalPts >= 10 && !isCapturedRef.current) {
+        if (totalPts >= 15 && !isCapturedRef.current) {
           startCountdown();
         }
       }
 
-      // Spline Stroke Renderer
-      ctx.lineWidth = 4;
+      // Render Smooth Splines
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = '#00f2fe';
+      ctx.lineWidth = 4;
 
       const fullList = [...strokesRef.current, ...(currentStrokeRef.current.length > 0 ? [currentStrokeRef.current] : [])];
       for (const stroke of fullList) {
@@ -364,76 +349,37 @@ export default function App() {
         ctx.lineTo(stroke[stroke.length - 1][0], stroke[stroke.length - 1][1]);
         ctx.stroke();
       }
+
+      ctx.restore();
     });
 
-    // Zero-lag video frame processing loop using requestVideoFrameCallback
-    let videoCallbackId;
-    const processFrame = async () => {
-      if (!isRunning) return;
-      if (video.readyState >= 2) {
-        await hands.send({ image: video });
-      }
-      if ('requestVideoFrameCallback' in video) {
-        videoCallbackId = video.requestVideoFrameCallback(processFrame);
-      } else {
-        videoCallbackId = requestAnimationFrame(processFrame);
-      }
-    };
-
-    navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, frameRate: { ideal: 60 } }
-    }).then((stream) => {
-      video.srcObject = stream;
-      video.play();
-      if ('requestVideoFrameCallback' in video) {
-        videoCallbackId = video.requestVideoFrameCallback(processFrame);
-      } else {
-        videoCallbackId = requestAnimationFrame(processFrame);
-      }
-    }).catch(err => setTerminalText(`> Camera Hardware Error: ${err.message}`));
+    const camera = new window.Camera(video, {
+      onFrame: async () => { await hands.send({ image: video }); },
+      width: 640,
+      height: 480
+    });
+    camera.start();
 
     return () => {
-      isRunning = false;
-      if ('requestVideoFrameCallback' in video && videoCallbackId) {
-        video.cancelVideoFrameCallback(videoCallbackId);
-      } else {
-        cancelAnimationFrame(videoCallbackId);
-      }
-      if (video.srcObject) {
-        video.srcObject.getTracks().forEach(track => track.stop());
-      }
+      camera.stop();
       hands.close();
     };
   }, [startCountdown, stopCountdown]);
 
   return (
     <div style={styles.container}>
-      <div style={styles.header}>
-        <h1 style={{ fontSize: '22px', fontWeight: 700 }}>AuthForge High-Precision Air-Signature</h1>
-        <p style={{ color: '#94a3b8', fontSize: '13px', marginTop: '2px' }}>
-          Zero-Lag MediaPipe Lite Engine with Rotational PCA Invariance
-        </p>
-      </div>
+      <h2 style={{ margin: '0 0 4px 0', color: '#38bdf8' }}>AuthForge Air-Signature Studio</h2>
+      <p style={{ color: '#94a3b8', fontSize: '13px', margin: '0 0 16px 0' }}>
+        Tactile Pinch Inking with Non-Interruptive Hand-Withdrawal Auto-Submit
+      </p>
 
       <div style={styles.grid}>
         <div style={styles.viewportWrapper}>
           <video ref={videoRef} playsInline muted style={styles.videoCanvas} />
           <canvas ref={canvasRef} width={640} height={480} style={styles.videoCanvas} />
 
-          <div style={styles.hudOverlay}>
-            <div style={styles.hudChip}>
-              <div ref={hudDotRef} style={styles.hudDot} />
-              <span ref={hudLabelRef}>Awaiting Hand...</span>
-            </div>
-            {enrollMode ? (
-              <div style={{ ...styles.hudChip, background: '#1e3a8a', border: '1px solid #3b82f6' }}>
-                <span>Enrollment: Pass {currentPass} / 3</span>
-              </div>
-            ) : (
-              <div style={styles.hudChip}>
-                <span ref={pointCounterRef}>Points: 0</span>
-              </div>
-            )}
+          <div style={styles.hudBadge}>
+            {enrollMode ? `Enrollment: Pass ${currentPass} of 3` : 'Verification Active'}
           </div>
 
           {showCountdown && (
@@ -452,53 +398,47 @@ export default function App() {
                     style={{ strokeDashoffset: ringOffset, transition: 'stroke-dashoffset 25ms linear' }}
                   />
                 </svg>
-                <span style={styles.timerText}>{secondsRemaining}</span>
+                <span style={styles.timerText}>{secondsLeft}</span>
               </div>
               <div style={{ fontSize: '13px', fontWeight: 600 }}>
-                {enrollMode ? `Auto-Capturing Pass ${currentPass}...` : "Auto-Verifying..."}
+                {enrollMode ? `Auto-Recording Pass ${currentPass}...` : "Auto-Verifying Signature..."}
               </div>
-              <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>Return hand to cancel</div>
+              <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                Return hand to camera to keep signing
+              </div>
             </div>
           )}
         </div>
 
         <div style={styles.sidebar}>
           <div style={styles.card}>
-            <p style={{ fontSize: '13px', color: '#94a3b8', lineHeight: '1.5' }}>
-              <strong style={{ color: '#fff' }}>Gestures:</strong><br />
-              • <strong>👌 Pinch Thumb + Index:</strong> Inks cursive trajectory.<br />
-              • <strong>🖐️ Release Pinch:</strong> Hovers without drawing.<br />
-              • <strong>Drop Hand Out of Frame:</strong> Auto-submits after 1.7s.
-            </p>
-          </div>
-
-          <div style={styles.card}>
-            <label style={{ fontSize: '12px', color: '#94a3b8' }}>User Identifier</label>
+            <label style={{ fontSize: '12px', color: '#94a3b8' }}>User Identifier:</label>
             <input
               type="text"
               value={userId}
-              onChange={(e) => setUserId(e.target.value)}
+              onChange={e => setUserId(e.target.value)}
               disabled={enrollMode}
               style={styles.input}
+              placeholder="e.g. user_alice"
             />
 
             {!enrollMode ? (
               <>
-                <button style={{ ...styles.button, background: '#00f2fe', color: '#050811' }} onClick={startEnrollmentWizard}>
+                <button style={{ ...styles.button, background: '#3b82f6', color: '#fff' }} onClick={startEnrollmentWizard}>
                   Start 3-Pass Enrollment
                 </button>
-                <button style={{ ...styles.button, background: '#1e293b', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }} onClick={handleVerificationRequest}>
-                  Verify Signature Now
+                <button style={{ ...styles.button, background: '#10b981', color: '#fff' }} onClick={handleVerificationRequest}>
+                  Verify Now (Manual)
                 </button>
               </>
             ) : (
-              <button style={{ ...styles.button, background: 'rgba(239, 68, 68, 0.2)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.3)' }} onClick={cancelEnrollment}>
+              <button style={{ ...styles.button, background: '#ef4444', color: '#fff' }} onClick={cancelEnrollment}>
                 Abort Enrollment
               </button>
             )}
 
-            <button style={{ ...styles.button, background: '#1e293b', color: '#94a3b8', border: '1px solid rgba(255,255,255,0.06)' }} onClick={handleClear}>
-              Clear Buffer
+            <button style={{ ...styles.button, background: '#1e293b', color: '#94a3b8' }} onClick={handleClear}>
+              Clear Canvas
             </button>
           </div>
 
@@ -523,17 +463,15 @@ const styles = {
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     padding: '16px'
   },
-  header: { textAlign: 'center', marginBottom: '16px' },
   grid: { display: 'grid', gridTemplateColumns: '640px 340px', gap: '20px' },
   viewportWrapper: {
     position: 'relative',
     width: '640px',
     height: '480px',
-    borderRadius: '14px',
+    borderRadius: '12px',
     overflow: 'hidden',
     backgroundColor: '#000',
-    border: '1px solid rgba(255, 255, 255, 0.12)',
-    boxShadow: '0 12px 40px rgba(0, 0, 0, 0.7)'
+    border: '2px solid #1e293b'
   },
   videoCanvas: {
     position: 'absolute',
@@ -543,29 +481,19 @@ const styles = {
     height: '480px',
     transform: 'scaleX(-1)'
   },
-  hudOverlay: {
+  hudBadge: {
     position: 'absolute',
     top: 12,
     left: 12,
-    right: 12,
-    display: 'flex',
-    justifyContent: 'space-between',
-    pointerEvents: 'none',
-    zIndex: 10
-  },
-  hudChip: {
-    background: 'rgba(15, 23, 42, 0.88)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    backdropFilter: 'blur(8px)',
-    padding: '5px 12px',
-    borderRadius: '20px',
+    background: 'rgba(15, 23, 42, 0.85)',
+    border: '1px solid rgba(255, 255, 255, 0.15)',
+    padding: '4px 12px',
+    borderRadius: '16px',
     fontSize: '12px',
     fontWeight: 600,
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px'
+    color: '#38bdf8',
+    zIndex: 5
   },
-  hudDot: { width: 8, height: 8, borderRadius: '50%', background: '#f59e0b' },
   countdownModal: {
     position: 'absolute',
     top: '50%',
@@ -576,7 +504,7 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     background: 'rgba(7, 11, 20, 0.94)',
-    border: '1px solid rgba(0, 242, 254, 0.3)',
+    border: '1px solid rgba(0, 242, 254, 0.4)',
     borderRadius: '16px',
     padding: '20px 28px',
     backdropFilter: 'blur(10px)',
@@ -594,27 +522,26 @@ const styles = {
   timerText: { position: 'absolute', fontSize: '19px', fontWeight: 700, fontFamily: 'monospace' },
   sidebar: { display: 'flex', flexDirection: 'column', gap: '14px' },
   card: {
-    background: 'rgba(15, 23, 42, 0.8)',
-    backdropFilter: 'blur(12px)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '12px',
+    background: '#0f172a',
+    border: '1px solid #1e293b',
+    borderRadius: '10px',
     padding: '16px',
     display: 'flex',
     flexDirection: 'column',
     gap: '10px'
   },
   input: {
-    background: '#0c1222',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
+    background: '#070b14',
+    border: '1px solid #334155',
     color: '#fff',
-    padding: '9px 12px',
-    borderRadius: '7px',
-    fontSize: '13px',
+    padding: '8px 12px',
+    borderRadius: '6px',
+    fontSize: '14px',
     outline: 'none'
   },
   button: {
-    padding: '11px 14px',
-    borderRadius: '7px',
+    padding: '10px 14px',
+    borderRadius: '6px',
     border: 'none',
     fontWeight: 600,
     fontSize: '13px',
@@ -622,14 +549,14 @@ const styles = {
   },
   terminal: {
     background: '#060a14',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '7px',
-    padding: '11px',
+    border: '1px solid #1e293b',
+    borderRadius: '6px',
+    padding: '12px',
     fontFamily: 'monospace',
     fontSize: '12px',
     color: '#38bdf8',
-    minHeight: '110px',
+    minHeight: '130px',
     whiteSpace: 'pre-wrap',
-    lineHeight: '1.45'
+    lineHeight: '1.5'
   }
 };
