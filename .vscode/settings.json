@@ -1,0 +1,7 @@
+{
+    "python.terminal.useEnvFile": true,
+    "python.analysis.extraPaths": [
+        "./core_auth",
+        "./faceauth/backend"
+    ]
+}

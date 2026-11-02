@@ -1,0 +1,55 @@
+# ==========================================
+# Operating System & IDE Artifacts
+# ==========================================
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+
+# ==========================================
+# Python Environments & Caches
+# ==========================================
+venv/
+*/venv/
+*/*/venv/
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# ==========================================
+# Local SQLite Database Files (Never commit binary databases)
+# ==========================================
+*.db
+*.sqlite
+*.sqlite3
+authforge_secure.db
+face_auth.db
+airsig/backend/authforge_secure.db
+faceauth/backend/face_auth.db
+
+# ==========================================
+# Node.js & Vite Build Artifacts
+# ==========================================
+node_modules/
+*/node_modules/
+*/*/node_modules/
+dist/
+*/dist/
+*/*/dist/
+.vite/
+*.log
+
+# ==========================================
+# Local Secrets & Environment Variables
+# ==========================================
+.env
+.env.local
+.env.*.local
+```[cite: 4]

@@ -1,0 +1,567 @@
+﻿========== app\api\registration.py ==========
+import os
+import base64
+
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models import User
+from app.services.speaker_service import extract_embedding
+from app.utils.encryption import encrypt_data
+from app.services.audio_preprocessing import preprocess_audio
+
+
+router = APIRouter(
+    prefix="/register",
+    tags=["Voice Registration"]
+)
+
+
+@router.post("/")
+async def register_user(
+    username: str = Form(...),
+    email: str = Form(...),
+    language: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+
+    # Check whether username already exists
+    existing_user = db.query(User).filter(
+        User.username == username
+    ).first()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Username already exists"
+        )
+
+    # Check whether email already exists
+    existing_email = db.query(User).filter(
+        User.email == email
+    ).first()
+
+    if existing_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already exists"
+        )
+
+    # Validate language
+    allowed_languages = ["en", "hi", "mr"]
+
+    if language not in allowed_languages:
+        raise HTTPException(
+            status_code=400,
+            detail="Language must be en, hi or mr"
+        )
+
+    # Create temp directory
+    os.makedirs("temp", exist_ok=True)
+
+    file_path = os.path.join(
+        "temp",
+        file.filename
+    )
+
+    # Save uploaded audio temporarily
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+
+    try:
+        # Preprocess audio before extracting speaker embedding
+        processed_file_path = preprocess_audio(file_path)
+
+        # Extract ECAPA-TDNN voice embedding
+        embedding = extract_embedding(file_path)
+
+        # Convert embedding to bytes
+        embedding_bytes =( embedding.detach()
+                          .cpu()
+                          .numpy()
+                          .tobytes())
+
+        # Encrypt embedding
+        encrypted_embedding = encrypt_data(
+            embedding_bytes
+        )
+
+        # Create database user
+        user = User(
+            username=username,
+            email=email,
+            language=language,
+            encrypted_embedding=encrypted_embedding
+        )
+
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        return {
+            "message": "User registered successfully",
+            "user_id": user.id,
+            "username": user.username,
+            "language": user.language
+        }
+
+    finally:
+
+
+        # Delete temporary audio
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        if "processed_file_path" in locals():
+            if os.path.exists(processed_file_path):
+                os.remove(processed_file_path)
+
+                   
+        
+========== app\api\login.py ==========
+import os
+import numpy as np
+import torch
+
+from fastapi import (
+    APIRouter,
+    UploadFile,
+    File,
+    Form,
+    Depends,
+    HTTPException
+)
+
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models import User
+from app.services.speaker_service import extract_embedding
+from app.services.whisper_service import transcribe_audio
+from app.services.liveness_service import verify_challenge
+from app.utils.encryption import decrypt_data
+from app.config import settings
+from app.services.audio_preprocessing import preprocess_audio
+
+
+router = APIRouter(
+    prefix="/login",
+    tags=["Voice Login"]
+)
+
+
+@router.post("/")
+async def voice_login(
+    username: str = Form(...),
+    challenge: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+
+    # -----------------------------------
+    # 1. Find registered user
+    # -----------------------------------
+
+    user = db.query(User).filter(
+        User.username == username
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+
+    # -----------------------------------
+    # 2. Save audio temporarily
+    # -----------------------------------
+
+    os.makedirs("temp", exist_ok=True)
+
+    file_path = os.path.join(
+        "temp",
+        file.filename
+    )
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+
+    try:
+
+        # -----------------------------------
+        # 3. LIVENESS CHECK
+        # -----------------------------------
+        processed_file_path = preprocess_audio(file_path)
+
+        transcription = transcribe_audio(processed_file_path)
+
+        spoken_text = transcription["text"]
+
+        liveness_passed = verify_challenge(
+            challenge,
+            spoken_text
+        )
+
+        if not liveness_passed:
+
+            return {
+                "authenticated": False,
+                "liveness": False,
+                "speaker_match": False,
+                "message": "Liveness check failed",
+                "spoken_text": spoken_text
+            }
+
+        # -----------------------------------
+        # 4. ECAPA-TDNN SPEAKER VERIFICATION
+        # -----------------------------------
+
+        login_embedding = extract_embedding(
+            processed_file_path
+          
+        )
+
+        # -----------------------------------
+        # 5. Decrypt stored embedding
+        # -----------------------------------
+
+        decrypted_data = decrypt_data(
+            user.encrypted_embedding
+        )
+
+        stored_embedding = np.frombuffer(
+            decrypted_data,
+            dtype=np.float32
+        )
+
+        stored_embedding = torch.tensor(
+            stored_embedding
+        )
+
+        # -----------------------------------
+        # 6. Make embedding shapes identical
+        # -----------------------------------
+
+        login_embedding = login_embedding.reshape(
+            1,
+            -1
+        )
+
+        stored_embedding = stored_embedding.reshape(
+            1,
+            -1
+        )
+
+        # -----------------------------------
+        # 7. Calculate similarity
+        # -----------------------------------
+
+        similarity = torch.nn.functional.cosine_similarity(
+            login_embedding,
+            stored_embedding,
+            dim=1
+        ).item()
+
+        speaker_match = (
+            similarity >=
+            settings.VOICE_SIMILARITY_THRESHOLD
+        )
+
+        # -----------------------------------
+        # 8. Final authentication decision
+        # -----------------------------------
+
+        if speaker_match:
+
+            return {
+                "authenticated": True,
+                "liveness": True,
+                "speaker_match": True,
+                "message": "Voice authentication successful",
+                "username": user.username,
+                "spoken_text": spoken_text,
+                "similarity": round(similarity, 4)
+            }
+
+        return {
+            "authenticated": False,
+            "liveness": True,
+            "speaker_match": False,
+            "message": "Speaker verification failed",
+            "username": user.username,
+            "spoken_text": spoken_text,
+            "similarity": round(similarity, 4)
+        }
+
+    finally:
+
+        # Delete temporary audio
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+            if "processed_file_path" in locals():
+                if os.path.exists(processed_file_path):
+                    os.remove(processed_file_path)
+========== app\api\transcription.py ==========
+import os
+
+from fastapi import APIRouter, UploadFile, File, HTTPException
+
+from app.services.whisper_service import transcribe_audio
+
+
+router = APIRouter(
+    prefix="/transcribe",
+    tags=["Speech to Text"]
+)
+
+
+@router.post("/")
+async def transcribe(file: UploadFile = File(...)):
+
+    allowed_types = [
+        "audio/wav",
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/x-wav",
+        "audio/mp4",
+        "audio/webm"
+    ]
+
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported audio format"
+        )
+
+    os.makedirs("temp", exist_ok=True)
+
+    file_path = os.path.join(
+        "temp",
+        file.filename
+    )
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+
+    try:
+
+        result = transcribe_audio(file_path)
+
+        return {
+            "filename": file.filename,
+            "language": result["language"],
+            "text": result["text"]
+        }
+
+    finally:
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+========== app\api\liveness.py ==========
+import os
+
+from fastapi import APIRouter, Form, UploadFile, File, HTTPException
+
+from app.services.liveness_service import (
+    generate_challenge,
+    verify_challenge
+)
+
+from app.services.whisper_service import transcribe_audio
+
+
+router = APIRouter(
+    prefix="/liveness",
+    tags=["Voice Liveness"]
+)
+
+
+@router.post("/challenge")
+async def create_challenge(
+    language: str = Form(...)
+):
+
+    challenge = generate_challenge(language)
+
+    return {
+        "language": language,
+        "challenge": challenge,
+        "message": "Speak this phrase for authentication"
+    }
+
+
+@router.post("/verify")
+async def verify_liveness(
+    challenge: str = Form(...),
+    file: UploadFile = File(...)
+):
+
+    os.makedirs("temp", exist_ok=True)
+
+    file_path = os.path.join(
+        "temp",
+        file.filename
+    )
+
+    # Save audio temporarily
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+
+    try:
+
+        # Convert speech to text
+        result = transcribe_audio(file_path)
+
+        spoken_text = result["text"]
+
+        # Compare spoken text with challenge
+        is_valid = verify_challenge(
+            challenge,
+            spoken_text
+        )
+
+        if is_valid:
+
+            return {
+                "liveness": True,
+                "message": "Challenge passed",
+                "spoken_text": spoken_text
+            }
+
+        return {
+            "liveness": False,
+            "message": "Challenge failed",
+            "spoken_text": spoken_text
+        }
+
+    finally:
+
+        # Delete temporary audio
+        if os.path.exists(file_path):
+            os.remove(file_path)
+========== app\services\speaker_service.py ==========
+import torch
+
+from speechbrain.inference.speaker import EncoderClassifier
+
+
+# Load ECAPA-TDNN model
+speaker_model = EncoderClassifier.from_hparams(
+    source="speechbrain/spkrec-ecapa-voxceleb"
+)
+
+
+def extract_embedding(audio_path: str):
+
+    signal = speaker_model.load_audio(audio_path)
+
+    embedding = speaker_model.encode_batch(signal)
+
+    return embedding
+
+
+def compare_embeddings(embedding1, embedding2):
+
+    similarity = torch.nn.functional.cosine_similarity(
+        embedding1,
+        embedding2
+    )
+
+    return similarity.item()
+========== app\services\liveness_service.py ==========
+import random
+import re
+
+
+CHALLENGES = {
+    "en": [
+        "my voice is my password",
+        "today I am testing voice authentication",
+        "voice security protects my account",
+        "this is my secure login",
+        "my voice confirms my identity"
+    ],
+
+    "hi": [
+        "à¤®à¥‡à¤°à¥€ à¤†à¤µà¤¾à¤œ à¤®à¥‡à¤°à¤¾ à¤ªà¤¾à¤¸à¤µà¤°à¥à¤¡ à¤¹à¥ˆ",
+        "à¤†à¤œ à¤®à¥ˆà¤‚ à¤†à¤µà¤¾à¤œ à¤ªà¥à¤°à¤®à¤¾à¤£à¥€à¤•à¤°à¤£ à¤•à¤¾ à¤ªà¤°à¥€à¤•à¥à¤·à¤£ à¤•à¤° à¤°à¤¹à¤¾ à¤¹à¥‚à¤‚",
+        "à¤®à¥‡à¤°à¥€ à¤†à¤µà¤¾à¤œ à¤®à¥‡à¤°à¥€ à¤ªà¤¹à¤šà¤¾à¤¨ à¤¹à¥ˆ",
+        "à¤¯à¤¹ à¤®à¥‡à¤°à¤¾ à¤¸à¥à¤°à¤•à¥à¤·à¤¿à¤¤ à¤²à¥‰à¤—à¤¿à¤¨ à¤¹à¥ˆ"
+    ],
+
+    "mr": [
+        "à¤®à¤¾à¤à¤¾ à¤†à¤µà¤¾à¤œ à¤®à¤¾à¤à¤¾ à¤ªà¤¾à¤¸à¤µà¤°à¥à¤¡ à¤†à¤¹à¥‡",
+        "à¤†à¤œ à¤®à¥€ à¤†à¤µà¤¾à¤œ à¤ªà¥à¤°à¤®à¤¾à¤£à¥€à¤•à¤°à¤£à¤¾à¤šà¥€ à¤šà¤¾à¤šà¤£à¥€ à¤•à¤°à¤¤ à¤†à¤¹à¥‡",
+        "à¤®à¤¾à¤à¤¾ à¤†à¤µà¤¾à¤œ à¤®à¤¾à¤à¥€ à¤“à¤³à¤– à¤†à¤¹à¥‡",
+        "à¤¹à¥‡ à¤®à¤¾à¤à¥‡ à¤¸à¥à¤°à¤•à¥à¤·à¤¿à¤¤ à¤²à¥‰à¤—à¤¿à¤¨ à¤†à¤¹à¥‡"
+    ]
+}
+
+
+def generate_challenge(language: str):
+
+    if language not in CHALLENGES:
+        language = "en"
+
+    return random.choice(CHALLENGES[language])
+
+
+def normalize_text(text: str):
+
+    text = text.lower().strip()
+
+    # Remove punctuation
+    text = re.sub(r"[^\w\s]", "", text)
+
+    # Remove extra spaces
+    text = " ".join(text.split())
+
+    return text
+
+
+def verify_challenge(expected: str, actual: str):
+
+    expected = normalize_text(expected)
+    actual = normalize_text(actual)
+
+    return expected == actual
+========== app\services\jwt_service.py ==========
+========== app\services\otp_service.py ==========
+import random
+import hashlib
+
+from datetime import datetime, timedelta
+
+from app.config import settings
+
+
+def generate_otp():
+
+    otp = ""
+
+    for _ in range(settings.OTP_LENGTH):
+        otp += str(random.randint(0, 9))
+
+    return otp
+
+
+def hash_otp(otp: str):
+
+    return hashlib.sha256(
+        otp.encode()
+    ).hexdigest()
+
+
+def verify_otp(otp: str, otp_hash: str):
+
+    return hash_otp(otp) == otp_hash
+
+
+def get_otp_expiry():
+
+    return datetime.utcnow() + timedelta(
+        minutes=settings.OTP_EXPIRE_MINUTES
+    )

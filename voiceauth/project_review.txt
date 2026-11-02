@@ -1,0 +1,218 @@
+﻿========== app\main.py ==========
+from fastapi import FastAPI
+
+from app.config import settings
+from app.database import Base, engine
+from app.api.transcription import router as transcription_router
+from app.api.registration import router as registration_router
+from app.api.login import router as login_router
+from app.api.liveness import router as liveness_router
+
+Base.metadata.create_all(bind=engine)
+
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    description=(
+        "Multilingual Voice Authentication System "
+        "supporting English, Hindi and Marathi."
+    ),
+    version="1.0.0"
+)
+
+app.include_router(transcription_router)
+app.include_router(registration_router)
+app.include_router(login_router)
+app.include_router(liveness_router)
+
+
+@app.get("/")
+def root():
+
+    return {
+        "message": "Multilingual Voice Authentication API",
+        "status": "running"
+    }
+
+
+@app.get("/health")
+def health():
+
+    return {
+        "status": "healthy",
+        "message": "API is running successfully"
+    }
+========== app\config.py ==========
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+
+    APP_NAME: str = "Multilingual Voice Authentication System"
+    DEBUG: bool = True
+
+    DATABASE_URL: str = "sqlite:///./voice_auth.db"
+
+    SECRET_KEY: str
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    ENCRYPTION_KEY: str
+
+    OTP_EXPIRE_MINUTES: int = 5
+    OTP_LENGTH: int = 6
+
+    VOICE_SIMILARITY_THRESHOLD: float = 0.70
+    LIVENESS_THRESHOLD: float = 0.70
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore"
+    )
+
+
+settings = Settings()
+========== app\database.py ==========
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+from app.config import settings
+
+
+connect_args = {}
+
+if settings.DATABASE_URL.startswith("sqlite"):
+    connect_args = {
+        "check_same_thread": False
+    }
+
+
+engine = create_engine(
+    settings.DATABASE_URL,
+    connect_args=connect_args
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine
+)
+
+Base = declarative_base()
+
+
+def get_db():
+    db = SessionLocal()
+
+    try:
+        yield db
+    finally:
+        db.close()
+========== app\models.py ==========
+from datetime import datetime
+
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
+
+from app.database import Base
+
+
+class User(Base):
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    username = Column(
+        String(100),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    email = Column(
+        String(255),
+        unique=True,
+        nullable=False,
+        index=True
+    )
+
+    language = Column(
+        String(20),
+        nullable=False
+    )
+
+    encrypted_embedding = Column(
+        String,
+        nullable=False
+    )
+
+    is_active = Column(
+        Boolean,
+        default=True
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+
+class OTPCode(Base):
+
+    __tablename__ = "otp_codes"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    user_id = Column(
+        Integer,
+        nullable=False
+    )
+
+    otp_hash = Column(
+        String,
+        nullable=False
+    )
+
+    expires_at = Column(
+        DateTime,
+        nullable=False
+    )
+
+    attempts = Column(
+        Integer,
+        default=0
+    )
+
+    is_used = Column(
+        Boolean,
+        default=False
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+========== app\schemas.py ==========
+from pydantic import BaseModel, EmailStr
+
+
+class UserResponse(BaseModel):
+
+    id: int
+    username: str
+    email: EmailStr
+    language: str
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
+class HealthResponse(BaseModel):
+
+    status: str
+    message: str

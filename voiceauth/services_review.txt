@@ -1,0 +1,81 @@
+﻿========== app\services\audio_preprocessing.py ==========
+import os
+import subprocess
+
+
+def preprocess_audio(input_path: str) -> str:
+
+    os.makedirs("temp/processed", exist_ok=True)
+
+    filename = os.path.splitext(
+        os.path.basename(input_path)
+    )[0]
+
+    output_path = os.path.join(
+        "temp",
+        "processed",
+        filename + "_processed.wav"
+    )
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+
+        # Convert to mono
+        "-ac", "1",
+
+        # Convert to 16 kHz
+        "-ar", "16000",
+
+        # Normalize volume
+        "-af", "loudnorm",
+
+        # WAV output
+        "-acodec", "pcm_s16le",
+
+        output_path
+    ]
+
+    subprocess.run(
+        command,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    return output_path
+========== app\services\whisper_service.py ==========
+import whisper
+
+
+# Load Whisper model
+model = whisper.load_model("base")
+
+
+def transcribe_audio(file_path: str):
+
+    result = model.transcribe(
+        file_path,
+        task="transcribe"
+    )
+
+    return {
+        "text": result["text"],
+        "language": result["language"]
+    }
+========== app\utils\encryption.py ==========
+from cryptography.fernet import Fernet
+
+from app.config import settings
+
+
+cipher = Fernet(settings.ENCRYPTION_KEY)
+
+
+def encrypt_data(data: bytes) -> str:
+    return cipher.encrypt(data).decode()
+
+
+def decrypt_data(data: str) -> bytes:
+    return cipher.decrypt(data.encode())

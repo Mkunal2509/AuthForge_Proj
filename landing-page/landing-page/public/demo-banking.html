@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apex Premier Online Banking</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: #060913; color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh; display: flex; flex-direction: column;
+    }
+    .top-nav {
+      height: 70px; padding: 0 40px; display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #1e293b; background: rgba(11, 19, 41, 0.7); backdrop-filter: blur(14px);
+      position: sticky; top: 0; z-index: 50;
+    }
+    .brand-group { display: flex; align-items: center; gap: 12px; }
+    .brand-icon {
+      width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, #06b6d4, #3b82f6);
+      display: flex; align-items: center; justify-content: center; font-size: 20px;
+    }
+    .brand-name { font-size: 1.25rem; font-weight: 800; color: #fff; }
+    .security-badge {
+      font-size: 11px; color: #38bdf8; background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.25); padding: 5px 12px; border-radius: 20px; font-weight: 600;
+    }
+    .portal-main { flex: 1; width: 100%; max-width: 1400px; margin: 0 auto; padding: 36px 40px; }
+
+    /* Login Splash */
+    #unauth-view { display: flex; align-items: center; justify-content: center; min-height: 65vh; }
+    .login-hero-card {
+      background: #0f172a; border: 1px solid #1e293b; border-radius: 20px; padding: 54px 44px;
+      max-width: 580px; width: 100%; text-align: center; box-shadow: 0 25px 60px rgba(0,0,0,0.7);
+      position: relative; overflow: hidden;
+    }
+    .login-hero-card::before {
+      content: ''; position: absolute; top: -120px; left: 50%; transform: translateX(-50%);
+      width: 240px; height: 240px; background: radial-gradient(circle, rgba(6, 182, 212, 0.25) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .btn-launch-auth {
+      background: linear-gradient(90deg, #06b6d4, #0284c7); color: #060913; border: none;
+      padding: 16px 36px; border-radius: 10px; font-weight: 800; font-size: 15px; cursor: pointer;
+      width: 100%; margin-top: 24px; transition: all 0.2s;
+    }
+    .btn-launch-auth:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(6, 182, 212, 0.45); }
+
+    /* Dashboard Layout */
+    .dashboard-view { display: none; animation: fadeIn 0.4s ease forwards; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .welcome-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+    .welcome-title { font-size: 2.2rem; font-weight: 800; color: #fff; margin: 0; }
+    .welcome-sub { color: #94a3b8; font-size: 14px; margin-top: 4px; }
+    .btn-signout {
+      background: #1e293b; color: #cbd5e1; border: 1px solid #334155; padding: 10px 20px;
+      border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-signout:hover { background: #ef4444; color: #fff; border-color: #ef4444; }
+
+    .dashboard-grid { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 24px; margin-bottom: 24px; }
+    .bank-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 16px; padding: 24px; }
+    .card-label { font-size: 12px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .card-balance { font-size: 2.4rem; font-weight: 800; color: #f8fafc; margin: 12px 0 6px; }
+
+    .debit-card-visual {
+      border-radius: 14px; padding: 22px; height: 140px; display: flex; flex-direction: column;
+      justify-content: space-between; position: relative; overflow: hidden; border: 1px solid #334155;
+    }
+    .chip-icon { width: 32px; height: 24px; background: #e2e8f0; border-radius: 4px; }
+    .card-num { font-family: monospace; font-size: 16px; letter-spacing: 2px; }
+
+    .ledger-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+    .ledger-table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+    .ledger-table th { text-align: left; font-size: 12px; color: #64748b; padding: 10px 14px; border-bottom: 1px solid #1e293b; }
+    .ledger-table td { padding: 14px; font-size: 13px; border-bottom: 1px solid #1e293b; }
+    .action-btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+    .quick-btn {
+      background: #1e293b; border: 1px solid #334155; color: #f8fafc; padding: 14px;
+      border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; text-align: center;
+    }
+    .quick-btn:hover { background: #06b6d4; color: #060913; border-color: #06b6d4; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+</head>
+<body>
+
+  <header class="top-nav">
+    <div class="brand-group">
+      <div class="brand-icon">🏦</div>
+      <div class="brand-name">Apex Premier Bank</div>
+    </div>
+    <div class="security-badge">
+      <span>🔒</span> AuthForge 3-Factor Multi-Modal Protected
+    </div>
+  </header>
+
+  <main class="portal-main">
+
+    <!-- 1. NEUTRAL LOGIN GATE (No names displayed before authentication) -->
+    <div id="unauth-view">
+      <div class="login-hero-card">
+        <div style="font-size: 40px; margin-bottom: 12px;">🛡️</div>
+        <h2 style="font-size: 26px; font-weight: 800; color: #fff; margin: 0 0 10px;">
+          Online Banking Portal
+        </h2>
+        <p style="color: #94a3b8; font-size: 14px; line-height: 1.6; margin: 0 0 24px;">
+          Access requires verification through 3 sequential security factors:
+          <br /><b style="color: #38bdf8;">Password ➔ Face Recognition ➔ Air-Signature</b>.
+        </p>
+
+        <button id="login-button" class="btn-launch-auth" type="button">
+          Sign In to Apex Banking ➔
+        </button>
+      </div>
+    </div>
+
+    <!-- 2. KUNAL'S AUTHENTICATED DASHBOARD -->
+    <div id="auth-view-kunal" class="dashboard-view">
+      <div class="welcome-header">
+        <div>
+          <h1 class="welcome-title">Hello Kunal 👋</h1>
+          <div class="welcome-sub">
+            Account #APX-88294019 • Registered Premier Checking • <span style="color: #10b981;">Online &amp; Active</span>
+          </div>
+        </div>
+        <button class="btn-signout" onclick="location.reload()">Sign Out</button>
+      </div>
+
+      <div class="dashboard-grid">
+        <div class="bank-card">
+          <div class="card-label">Premier Total Balance</div>
+          <div class="card-balance">$142,850.00</div>
+          <div style="font-size: 12px; color: #10b981;">↑ +4.2% interest earned this month</div>
+        </div>
+
+        <div class="bank-card">
+          <div class="card-label">Savings &amp; High Yield Liquidity</div>
+          <div class="card-balance">$88,410.75</div>
+          <div style="font-size: 12px; color: #38bdf8;">★ 5.15% APY High Yield Compound</div>
+        </div>
+
+        <div class="debit-card-visual" style="background: linear-gradient(135deg, #1e293b 0%, #090e1a 100%);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="chip-icon"></div>
+            <span style="font-size: 14px; font-weight: 700; color: #38bdf8;">Apex Black Diamond</span>
+          </div>
+          <div class="card-num" style="color: #e2e8f0;">•••• •••• •••• 9284</div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8;">
+            <span>KUNAL</span><span>EXP 08/29</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ledger-grid">
+        <div class="bank-card">
+          <h3 style="margin: 0; font-size: 16px; color: #f8fafc;">Recent Account Activity</h3>
+          <table class="ledger-table">
+            <thead>
+              <tr><th>Description</th><th>Date</th><th style="text-align: right;">Amount</th></tr>
+            </thead>
+            <tbody>
+              <tr><td style="font-weight: 600;">Global Equity Portfolio Dividend</td><td style="color: #94a3b8;">Today, 11:20 AM</td><td style="text-align: right; color: #10b981; font-weight: 700;">+$4,250.00</td></tr>
+              <tr><td style="font-weight: 600;">Cloud Infrastructure Services</td><td style="color: #94a3b8;">Yesterday</td><td style="text-align: right; color: #f8fafc; font-weight: 700;">-$340.50</td></tr>
+              <tr><td style="font-weight: 600;">Automated Reserve Transfer</td><td style="color: #94a3b8;">Oct 29, 2026</td><td style="text-align: right; color: #f8fafc; font-weight: 700;">-$1,500.00</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="bank-card">
+          <h3 style="margin: 0 0 14px; font-size: 16px; color: #f8fafc;">Premier Transfers</h3>
+          <div class="action-btn-row">
+            <button class="quick-btn">💸 Instant Wire</button>
+            <button class="quick-btn">🔄 Transfer</button>
+          </div>
+          <div style="margin-top: 20px; padding: 14px; background: #070b14; border: 1px solid #1e293b; border-radius: 10px;">
+            <div style="font-size: 11px; color: #94a3b8;">Verified Session JWT:</div>
+            <div id="jwt-kunal" style="font-size: 10px; color: #10b981; word-break: break-all; margin-top: 6px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. SANIKA'S AUTHENTICATED DASHBOARD -->
+    <div id="auth-view-sanika" class="dashboard-view">
+      <div class="welcome-header">
+        <div>
+          <h1 class="welcome-title">Hello Sanika 👋</h1>
+          <div class="welcome-sub">
+            Account #APX-44910283 • Wealth Management Private Banking • <span style="color: #10b981;">Online &amp; Active</span>
+          </div>
+        </div>
+        <button class="btn-signout" onclick="location.reload()">Sign Out</button>
+      </div>
+
+      <div class="dashboard-grid">
+        <div class="bank-card">
+          <div class="card-label">Total Portfolio Value</div>
+          <div class="card-balance">$214,500.00</div>
+          <div style="font-size: 12px; color: #10b981;">↑ +5.8% return on assets</div>
+        </div>
+
+        <div class="bank-card">
+          <div class="card-label">High-Yield Cash Vault</div>
+          <div class="card-balance">$96,200.00</div>
+          <div style="font-size: 12px; color: #10b981;">★ 5.25% Annual Yield Compounding</div>
+        </div>
+
+        <div class="debit-card-visual" style="background: linear-gradient(135deg, #132a26 0%, #061512 100%); border-color: #10b981;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="chip-icon"></div>
+            <span style="font-size: 14px; font-weight: 700; color: #10b981;">Apex Emerald Reserve</span>
+          </div>
+          <div class="card-num" style="color: #a7f3d0;">•••• •••• •••• 5519</div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8;">
+            <span>SANIKA</span><span>EXP 11/30</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ledger-grid">
+        <div class="bank-card">
+          <h3 style="margin: 0; font-size: 16px; color: #f8fafc;">Recent Authorized Activity</h3>
+          <table class="ledger-table">
+            <thead>
+              <tr><th>Description</th><th>Date</th><th style="text-align: right;">Amount</th></tr>
+            </thead>
+            <tbody>
+              <tr><td style="font-weight: 600;">Venture Fund Distribution</td><td style="color: #94a3b8;">Today, 02:45 PM</td><td style="text-align: right; color: #10b981; font-weight: 700;">+$8,500.00</td></tr>
+              <tr><td style="font-weight: 600;">Nordic Tech Retainer Settlement</td><td style="color: #94a3b8;">Oct 30, 2026</td><td style="text-align: right; color: #10b981; font-weight: 700;">+$14,200.00</td></tr>
+              <tr><td style="font-weight: 600;">Global Travel Concierge</td><td style="color: #94a3b8;">Oct 27, 2026</td><td style="text-align: right; color: #f8fafc; font-weight: 700;">-$890.00</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="bank-card">
+          <h3 style="margin: 0 0 14px; font-size: 16px; color: #f8fafc;">Wealth Operations</h3>
+          <div class="action-btn-row">
+            <button class="quick-btn" style="border-color: #10b981;">💎 Portfolio Rebalance</button>
+            <button class="quick-btn" style="border-color: #10b981;">📄 Tax Audit Packet</button>
+          </div>
+          <div style="margin-top: 20px; padding: 14px; background: #070b14; border: 1px solid #1e293b; border-radius: 10px;">
+            <div style="font-size: 11px; color: #94a3b8;">Verified Session JWT:</div>
+            <div id="jwt-sanika" style="font-size: 10px; color: #10b981; word-break: break-all; margin-top: 6px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="./auth-forge-sdk.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      const btn = document.getElementById('login-button');
+
+      const authClient = new window.AuthForge({
+        clientId: "client_apex_demo",
+        onSuccess: (session) => {
+          document.getElementById('unauth-view').style.display = 'none';
+
+          if (session.user_id === "sanika") {
+            document.getElementById('auth-view-sanika').style.display = 'block';
+            document.getElementById('jwt-sanika').innerText = session.session_token;
+          } else {
+            // Defaults to Kunal (or any other user)
+            document.getElementById('auth-view-kunal').style.display = 'block';
+            document.getElementById('jwt-kunal').innerText = session.session_token;
+          }
+        },
+        onError: (err) => {
+          alert("Authentication Failed: " + err);
+        }
+      });
+
+      btn.onclick = () => authClient.open();
+    });
+  </script>
+</body>
+</html>
